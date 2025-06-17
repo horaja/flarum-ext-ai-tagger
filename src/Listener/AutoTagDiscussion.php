@@ -107,7 +107,7 @@ class AutoTagDiscussion
 		// implement a try-catch block here during staging for better debugging
 		try
 		{
-			$client = new HttpClient(['timeout' => 120.0]);
+			$client = new HttpClient(['timeout' => 280.0]);
 			$response = $client->post($ai_backend_url, ['json' => ['content' => $content]]);
 			$data = json_decode($response->getBody()->getContents(), true);
 	
