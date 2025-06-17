@@ -9,8 +9,10 @@
 
 namespace Horaja\AiTagger;
 
+use Flarum\Discussion\Event\Saving;
 use Flarum\Extend;
 
 return [
-    // Backend extenders can go here
+    (new Extend\Event)
+			->listen(Saving::class, Listener\AutoTagDiscussion::class)
 ];
