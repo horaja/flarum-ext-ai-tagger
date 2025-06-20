@@ -15,13 +15,30 @@ use Flarum\Queue\AbstractJob;
 use Flarum\Tags\TagRepository;
 use Flarum\User\User;
 use GuzzleHttp\Client as HttpClient;
+use Psr\Log\LoggerInterface;
 
 class GenerateTagsJob extends AbstractJob
 {
+	/**
+	 * @var int
+	 */
 	protected $discussionId;
+
+	/**
+	 * @var int
+	 */
 	protected $actorId;
+
+	/**
+	 * @var string
+	 */
 	protected $content;
 
+	/**
+	 * @param int $discussionId The ID of the discussion to tag.
+	 * @param int $actorId The ID of the user performing the action.
+	 * @param string $content The text content to be analyzed.
+	 */
 	function __construct(int $discussionId, int $actorId, string $content)
 	{
 		$this->discussionId = $discussionId;
@@ -29,14 +46,24 @@ class GenerateTagsJob extends AbstractJob
 		$this->content = $content;
 	}
 
-	function handle(TagRepository $tags, DiscussionRepository $discussions)
+	/**
+	 * Execute the job.
+	 * 
+	 * Fetches tags from the AI service, finds corresponding tag IDs in Flarum,
+	 * merges them with user-selected tags, and syncs them to the discussion.
+	 * 
+	 * @param TagRepository $tags The Flarum tag repository.
+	 * @param DiscussionRepository $discussions The Flarum discussion repository.
+	 * @param LoggerInterface $log The Flarum logger.
+	 * @return void
+	 */
+	function handle(TagRepository $tags, DiscussionRepository $discussions, LoggerInterface $log)
 	{
-		error_log('>>> AI Tagger JOB GENERATOR IS RUNNING! <<<');
+		$log->info(sprintf('[AI Tagger] GenerateTagsJob running for discussion ID: %d.', $this->discussionId));
 
-		$suggested_tags = $this->getSuggestedTags($this->content);
+		$suggested_tags = $this->getSuggestedTags($this->content, $log);
 		if (empty($suggested_tags))
 		{
-			error_log("Warning: No output from Text Classification Model");
 			return;
 		}
 
@@ -44,9 +71,14 @@ class GenerateTagsJob extends AbstractJob
 			->whereIn('name', $suggested_tags)
 			->pluck('id')
 			->all();
+		
 		if (empty($ai_tag_ids))
 		{
-			error_log("Error: No matching tags found in Flarum");
+			$log->warning(sprintf(
+				'[AI Tagger] No Flarum tags found matching the AI suggestions: ["%s"] for discussion ID: %d.',
+				implode('", "', $suggested_tags),
+				$this->discussionId
+			));
 			return;
 		}
 
@@ -57,9 +89,24 @@ class GenerateTagsJob extends AbstractJob
 		$tag_ids = array_unique(array_merge($ai_tag_ids, $user_tag_ids));
 
 		$discussion->tags()->sync($tag_ids);
+
+		$log->info(sprintf(
+			'[AI Tagger] Successfully synced tags for discussion ID: %d.',
+			$this->discussionId
+		));
 	}
 
-	protected function getSuggestedTags(string $content) : array
+	/**
+	 * Fetches suggested tags from the external AI backend service.
+	 * 
+	 * Makes an HTTP POST request to the AI service, sending the discussion
+	 * content and returning an array of suggested tag names.
+	 * 
+	 * @param string $content The text content to analyze.
+	 * @param LoggerInterface $log The logger instance.
+	 * @return string[] An array of suggested tag names. Returns an empty array on failure.
+	 */
+	protected function getSuggestedTags(string $content, LoggerInterface $log) : array
 	{
 		$ai_backend_url = 'http://ai_backend:5000/api/v1/suggest-tags';
 
@@ -68,11 +115,24 @@ class GenerateTagsJob extends AbstractJob
 			$client = new HttpClient(['timeout' => 280.0]);
 			$response = $client->post($ai_backend_url, ['json' => ['content' => $content]]);
 			$data = json_decode($response->getBody()->getContents(), true);
-	
-			return $data['suggested_tags'] ?? [];
+			
+			if (empty($data['suggested_tags'])) {
+				$log->info(sprintf(
+						'[AI Tagger] AI service returned no suggested tags for discussion ID: %d.',
+						$this->discussionId
+				));
+				return [];
+			}
+
+			return $data['suggested_tags'];
+
 		} catch (\Exception $e)
 		{
-			error_log('AI Tagger HTTP Error: ' . $e->getMessage());
+			$log->error(sprintf(
+        '[AI Tagger] HTTP request to AI backend failed for discussion ID: %d. Error: %s',
+        $this->discussionId,
+        $e->getMessage()
+			));
 			return [];
 		}
 	}
